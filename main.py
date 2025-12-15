@@ -5,8 +5,8 @@ from datetime import datetime
 import time
 
 # --- 配置信息 ---
-USER_ID = "1791723826"
-PASSWORD = "lw221211"
+USER_ID = st.secrets["MY_USERNAME"]
+PASSWORD = st.secrets["MY_PASSWORD"]
 DB_FILE = "my_daily_logs.db"
 
 
@@ -136,4 +136,5 @@ def main():
 
 
 if __name__ == '__main__':
+
     main()
