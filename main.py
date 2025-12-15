@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import time
+import pytz # 引入时区库
 from streamlit_gsheets import GSheetsConnection
 
 # --- 配置信息 ---
@@ -12,11 +13,9 @@ SPREADSHEET_URL = st.secrets["SPREADSHEET_URL"]
 # --- 1. 数据库操作 (Google Sheets 版) ---
 def get_data():
     """从云端读取数据"""
-    # ttl=0 代表不缓存，每次强制读取最新数据
     conn = st.connection("gsheets", type=GSheetsConnection)
     try:
         df = conn.read(spreadsheet=SPREADSHEET_URL, ttl=0)
-        # 如果是空表，手动初始化列名，防止报错
         if df.empty:
             return pd.DataFrame(columns=["timestamp", "content", "week_number"])
         return df
@@ -31,8 +30,10 @@ def add_log(new_content):
     # 1. 读取旧数据
     old_df = get_data()
     
-    # 2. 构造新数据
-    now = datetime.now()
+    # 2. 构造新数据 (关键修改：强制使用北京时间)
+    beijing_tz = pytz.timezone('Asia/Shanghai')
+    now = datetime.now(beijing_tz) # 获取带时区的当前时间
+    
     new_row = pd.DataFrame([{
         "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
         "content": new_content,
@@ -40,7 +41,6 @@ def add_log(new_content):
     }])
     
     # 3. 合并
-    # handle empty dataframe case
     if old_df.empty:
         updated_df = new_row
     else:
@@ -51,7 +51,7 @@ def add_log(new_content):
 
 # --- 2. 页面逻辑 ---
 def main():
-    st.set_page_config(page_title="个人工作日志 (云端版)", page_icon="☁️", layout="centered")
+    st.set_page_config(page_title="个人工作日志", page_icon="📝", layout="centered")
 
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
@@ -60,7 +60,6 @@ def main():
     if not st.session_state['logged_in']:
         st.title("🔒 请登录")
         with st.form("login"):
-            # 自动填入账号密码
             username = st.text_input("账号", value=USER_ID)
             password = st.text_input("密码", type="password", value=PASSWORD)
             if st.form_submit_button("登录"):
@@ -77,8 +76,12 @@ def main():
             st.session_state['logged_in'] = False
             st.rerun()
 
-        st.title("☁️ 每日工作记录")
-        st.caption("数据已连接 Google Sheets，永久保存不丢失")
+        st.title("📝 每日工作记录")
+        
+        # 显示当前的北京时间，确认时间对不对
+        beijing_tz = pytz.timezone('Asia/Shanghai')
+        current_time_str = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M")
+        st.caption(f"当前北京时间: {current_time_str} | 数据已连接云端")
 
         # --- 写日志 ---
         with st.form("new_log", clear_on_submit=True):
@@ -96,8 +99,7 @@ def main():
         df = get_data()
         
         if not df.empty:
-            # 按时间倒序（最新的在上面）
-            # 确保 timestamp 是字符串再排序，或者转 datetime
+            # 按时间倒序
             df['timestamp'] = df['timestamp'].astype(str)
             df = df.sort_values(by='timestamp', ascending=False)
 
@@ -110,17 +112,16 @@ def main():
             with tab2:
                 # 简单的周报聚合
                 df['year'] = pd.to_datetime(df['timestamp']).dt.year
-                # 确保 week_number 是数字
                 df['week_number'] = pd.to_numeric(df['week_number'], errors='coerce').fillna(0).astype(int)
                 
                 groups = df.groupby(['year', 'week_number'])
-                # 倒序遍历（最近的周在最前）
                 for (year, week), group in sorted(groups, key=lambda x: x[0], reverse=True):
                     with st.expander(f"{year}年 第{week}周", expanded=True):
-                        # 组内按时间正序
                         group = group.sort_values('timestamp')
                         for _, row in group.iterrows():
-                            st.write(f"- `{row['timestamp'][5:10]}` : {row['content']}")
+                            # 只取时间字符串的月-日部分
+                            date_part = row['timestamp'][5:10] if len(str(row['timestamp'])) > 10 else row['timestamp']
+                            st.write(f"- `{date_part}` : {row['content']}")
         else:
             st.write("还没有日志，写一条试试！")
 
