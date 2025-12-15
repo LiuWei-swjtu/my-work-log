@@ -1,140 +1,128 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
 from datetime import datetime
 import time
+from streamlit_gsheets import GSheetsConnection
 
 # --- 配置信息 ---
 USER_ID = st.secrets["MY_USERNAME"]
 PASSWORD = st.secrets["MY_PASSWORD"]
-DB_FILE = "my_daily_logs.db"
+SPREADSHEET_URL = st.secrets["SPREADSHEET_URL"]
 
+# --- 1. 数据库操作 (Google Sheets 版) ---
+def get_data():
+    """从云端读取数据"""
+    # ttl=0 代表不缓存，每次强制读取最新数据
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    try:
+        df = conn.read(spreadsheet=SPREADSHEET_URL, ttl=0)
+        # 如果是空表，手动初始化列名，防止报错
+        if df.empty:
+            return pd.DataFrame(columns=["timestamp", "content", "week_number"])
+        return df
+    except Exception as e:
+        st.error(f"连接表格失败，请检查 Secrets 配置。错误信息: {e}")
+        return pd.DataFrame()
 
-# --- 1. 数据库操作函数 ---
-def init_db():
-    """初始化数据库，如果不存在则创建表"""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS logs
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                  timestamp TEXT, 
-                  content TEXT,
-                  week_number INTEGER)''')
-    conn.commit()
-    conn.close()
-
-
-def add_log(content):
-    """添加一条日志"""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+def add_log(new_content):
+    """写入一条新日志"""
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    
+    # 1. 读取旧数据
+    old_df = get_data()
+    
+    # 2. 构造新数据
     now = datetime.now()
-    # 记录时间字符串 YYYY-MM-DD HH:MM:SS
-    time_str = now.strftime("%Y-%m-%d %H:%M:%S")
-    # 记录是一年中的第几周，方便后续汇总
-    week_num = now.isocalendar()[1]
+    new_row = pd.DataFrame([{
+        "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "content": new_content,
+        "week_number": now.isocalendar()[1]
+    }])
+    
+    # 3. 合并
+    # handle empty dataframe case
+    if old_df.empty:
+        updated_df = new_row
+    else:
+        updated_df = pd.concat([old_df, new_row], ignore_index=True)
+        
+    # 4. 写回云端
+    conn.update(spreadsheet=SPREADSHEET_URL, data=updated_df)
 
-    c.execute("INSERT INTO logs (timestamp, content, week_number) VALUES (?, ?, ?)",
-              (time_str, content, week_num))
-    conn.commit()
-    conn.close()
-
-
-def get_logs():
-    """读取所有日志"""
-    conn = sqlite3.connect(DB_FILE)
-    df = pd.read_sql_query("SELECT timestamp, content, week_number FROM logs ORDER BY id DESC", conn)
-    conn.close()
-    return df
-
-
-# --- 2. 页面布局与逻辑 ---
+# --- 2. 页面逻辑 ---
 def main():
-    st.set_page_config(page_title="个人工作日志", page_icon="📝", layout="centered")
-    init_db()
+    st.set_page_config(page_title="个人工作日志 (云端版)", page_icon="☁️", layout="centered")
 
-    # Session State 用于维持登录状态
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
 
-    # --- 登录界面 ---
+    # --- 登录页 ---
     if not st.session_state['logged_in']:
-        st.title("🔒 请先登录")
-
-        # 使用 form 表单，支持回车提交
-        with st.form(key='login_form'):
-            # 自动填入账号
+        st.title("🔒 请登录")
+        with st.form("login"):
+            # 自动填入账号密码
             username = st.text_input("账号", value=USER_ID)
-            # 自动填入密码（依然显示为星号）
             password = st.text_input("密码", type="password", value=PASSWORD)
-            submit_button = st.form_submit_button(label='登录')
-
-        if submit_button:
-            if username == USER_ID and password == PASSWORD:
-                st.session_state['logged_in'] = True
-                st.success("登录成功！")
-                time.sleep(0.5)
-                st.rerun()  # 重新加载页面进入主界面
-            else:
-                st.error("账号或密码错误")
-
+            if st.form_submit_button("登录"):
+                if username == USER_ID and password == PASSWORD:
+                    st.session_state['logged_in'] = True
+                    st.rerun()
+                else:
+                    st.error("密码错误")
+    
     # --- 主界面 ---
     else:
-        st.sidebar.title(f"用户: {USER_ID}")
-        if st.sidebar.button("退出登录"):
+        st.sidebar.write(f"👤 用户: {USER_ID}")
+        if st.sidebar.button("退出"):
             st.session_state['logged_in'] = False
             st.rerun()
 
-        st.title("📝 每日工作记录")
+        st.title("☁️ 每日工作记录")
+        st.caption("数据已连接 Google Sheets，永久保存不丢失")
 
-        # --- 输入区域 ---
-        st.subheader("今天干了什么？")
-        with st.form(key='log_form', clear_on_submit=True):
-            new_log = st.text_area("输入内容...", height=100)
-            submit_log = st.form_submit_button(label='提交记录')
+        # --- 写日志 ---
+        with st.form("new_log", clear_on_submit=True):
+            text = st.text_area("今天干了什么？", height=100)
+            if st.form_submit_button("提交保存"):
+                if text.strip():
+                    with st.spinner("正在同步到谷歌云端..."):
+                        add_log(text)
+                    st.success("✅ 保存成功！")
+                    time.sleep(1)
+                    st.rerun()
 
-            if submit_log and new_log.strip():
-                add_log(new_log)
-                st.success("记录已保存！")
-                time.sleep(0.5)
-                st.rerun()  # 刷新显示最新列表
+        # --- 看日志 ---
+        st.divider()
+        df = get_data()
+        
+        if not df.empty:
+            # 按时间倒序（最新的在上面）
+            # 确保 timestamp 是字符串再排序，或者转 datetime
+            df['timestamp'] = df['timestamp'].astype(str)
+            df = df.sort_values(by='timestamp', ascending=False)
 
-        # --- 数据展示区域 ---
-        tab1, tab2 = st.tabs(["📅 所有记录", "📊 每周总结"])
-
-        df = get_logs()
-
-        with tab1:
-            if not df.empty:
-                # 简单美化显示
-                for index, row in df.iterrows():
-                    st.markdown(f"**{row['timestamp']}**")
-                    st.info(row['content'])
-            else:
-                st.write("暂无记录，快去添加第一条吧！")
-
-        with tab2:
-            st.write("这里按周自动汇总你的工作内容：")
-            if not df.empty:
-                # 将 timestamp 转为 datetime 对象以便处理
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
-                df['year'] = df['timestamp'].dt.year
-
-                # 按年份和周数分组
-                grouped = df.groupby(['year', 'week_number'])
-
-                for (year, week), group in grouped:
-                    with st.expander(f"{year}年 - 第 {week} 周 汇总", expanded=True):
-                        # 将这一周所有的 content 拼接起来
-                        daily_summary = []
+            tab1, tab2 = st.tabs(["📝 列表视图", "📊 周报汇总"])
+            
+            with tab1:
+                for _, row in df.iterrows():
+                    st.info(f"**{row['timestamp']}**\n\n{row['content']}")
+            
+            with tab2:
+                # 简单的周报聚合
+                df['year'] = pd.to_datetime(df['timestamp']).dt.year
+                # 确保 week_number 是数字
+                df['week_number'] = pd.to_numeric(df['week_number'], errors='coerce').fillna(0).astype(int)
+                
+                groups = df.groupby(['year', 'week_number'])
+                # 倒序遍历（最近的周在最前）
+                for (year, week), group in sorted(groups, key=lambda x: x[0], reverse=True):
+                    with st.expander(f"{year}年 第{week}周", expanded=True):
+                        # 组内按时间正序
+                        group = group.sort_values('timestamp')
                         for _, row in group.iterrows():
-                            daily_summary.append(f"- [{row['timestamp'].strftime('%m-%d')}] {row['content']}")
+                            st.write(f"- `{row['timestamp'][5:10]}` : {row['content']}")
+        else:
+            st.write("还没有日志，写一条试试！")
 
-                        st.markdown("\n".join(daily_summary))
-            else:
-                st.write("暂无数据。")
-
-
-if __name__ == '__main__':
-
+if __name__ == "__main__":
     main()
