@@ -60,7 +60,7 @@ def get_ai_summary(df):
 
         logs = "\n".join([f"- {c}" for c in week_df['content']])
         # 强制简洁
-        prompt = f"你是一个高效的科研助手。请直接、精炼地总结以下科研进展，禁止深度推理，直接分点给出结果：\n\n{logs}"
+        prompt = f"你是一个高效的科研助手。请总结以下科研进展，禁止深度推理：\n\n{logs}"
 
         completion = client.chat.completions.create(
             model="qwen3-235b-a22b", 
@@ -168,3 +168,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
