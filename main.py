@@ -75,45 +75,40 @@ def get_ai_summary_stream(df):
 def main():
     st.set_page_config(page_title="科研日记", page_icon="🌍")
 
-    # --- 核心 CSS 修改：隐藏右下角图标 + 修复移动端列堆叠 ---
+    # --- 强力 CSS：隐藏右下角图标 + 锁定手机端横向排列 ---
     st.markdown("""
         <style>
-        /* 1. 隐藏所有官方按钮、角标、页眉页脚 */
-        header {visibility: hidden;}
-        footer {visibility: hidden;}
-        .stAppDeployButton {display:none;}
-        [data-testid="stStatusWidget"] {display:none !important;}
-        .stAppToolbar {display: none !important;}
-        iframe[title="manage-app"] {display: none !important;}
-        #MainMenu {visibility: hidden;}
+        /* 1. 彻底隐藏官方元素：Manage App, 底部 Logo, 顶部工具栏 */
+        header, footer {visibility: hidden !important; height: 0px !important;}
+        .stDeployButton, .stAppDeployButton {display:none !important;}
+        [data-testid="stStatusWidget"], [data-testid="stToolbar"] {display: none !important;}
+        iframe[title="manage-app"], .stStatusWidget {display: none !important;}
+        div[data-testid="stDecoration"] {display: none !important;}
 
-        /* 2. 修复移动端 st.columns 堆叠问题，强制横向排列 */
+        /* 2. 强制 st.columns 在手机端保持横向排列，不准堆叠 */
         [data-testid="stHorizontalBlock"] {
             flex-direction: row !important;
             flex-wrap: nowrap !important;
             align-items: center !important;
         }
-        [data-testid="column"] {
-            width: fit-content !important;
-            flex: unset !important;
-            min-width: 0px !important;
-        }
-        /* 时间日期列占满剩余空间 */
-        [data-testid="stHorizontalBlock"] > div:first-child {
-            flex: 1 1 auto !important;
-            width: 100% !important;
-        }
-
-        /* 3. 按钮样式优化：防止手机端按钮变大 */
-        .stButton button {
-            width: 38px !important;
-            height: 38px !important;
-            padding: 0px !important;
+        
+        /* 3. 按钮样式优化：固定小方块尺寸，防止手机端撑满全屏 */
+        .stButton > button {
+            width: 35px !important;
+            height: 35px !important;
+            min-width: 35px !important;
+            padding: 0 !important;
+            font-size: 16px !important;
             display: flex !important;
             align-items: center !important;
             justify-content: center !important;
-            border-radius: 8px !important;
-            margin-top: 0px !important;
+            border-radius: 5px !important;
+            line-height: 1 !important;
+        }
+        
+        /* 4. 调整日志条目内部间距 */
+        [data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock"] > div {
+            padding-bottom: 0px !important;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -165,13 +160,15 @@ def main():
             with tab1:
                 for idx in reversed(df.index):
                     with st.container(border=True):
-                        # 排版优化：时间与按钮保持在同一行
-                        c1, c2, c3 = st.columns([1, 0.1, 0.1])
-                        c1.markdown(f"**{df.at[idx, 'timestamp'].strftime('%Y-%m-%d %H:%M')}**")
+                        # --- 核心排版：锁定 [时间戳(占据剩余空间) | 按钮(固定宽) | 按钮(固定宽)] ---
+                        row_cols = st.columns([1, 0.15, 0.15])
                         
-                        if c2.button("✏️", key=f"e_{idx}"): 
+                        row_cols[0].markdown(f"**{df.at[idx, 'timestamp'].strftime('%Y-%m-%d %H:%M')}**")
+                        
+                        if row_cols[1].button("✏️", key=f"e_{idx}"): 
                             edit_dialog(idx, df.at[idx, 'content'], df)
-                        if c3.button("❌", key=f"d_{idx}"):
+                            
+                        if row_cols[2].button("❌", key=f"d_{idx}"):
                             save_data(df.drop(idx))
                             if 'ai_result' in st.session_state: del st.session_state['ai_result']
                             st.rerun()
@@ -394,5 +391,6 @@ if __name__ == "__main__":
 
 # if __name__ == "__main__":
 #     main()
+
 
 
