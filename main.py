@@ -16,7 +16,6 @@ QWEN_KEY = st.secrets["QWEN_API_KEY"]
 def get_data():
     conn = st.connection("gsheets", type=GSheetsConnection)
     try:
-        # ttl=2 保持一定频率的数据刷新
         df = conn.read(spreadsheet=SPREADSHEET_URL, ttl=2)
         if df.empty:
             return pd.DataFrame(columns=["timestamp", "content", "week_number"])
@@ -44,11 +43,9 @@ def edit_dialog(index, content, df):
         time.sleep(0.5)
         st.rerun()
 
-# --- 3. 流式 AI 总结逻辑 ---
-def stream_ai_summary(df):
-    """
-    流式生成总结，实现分页处理（仅发送本周日志）
-    """
+# --- 3. Qwen3 AI 流式总结逻辑 ---
+def get_ai_summary_stream(df):
+    """流式获取总结，仅处理本周数据"""
     try:
         client = OpenAI(
             api_key=QWEN_KEY,
@@ -57,39 +54,40 @@ def stream_ai_summary(df):
         tz = pytz.timezone('Asia/Shanghai')
         curr_wk = datetime.now(tz).isocalendar()[1]
         
-        # 【分页处理】仅提取本周数据传给 AI
+        # 【分页处理】仅筛选本周内容发送给 AI
         week_df = df[df['week_number'] == curr_wk]
         
         if week_df.empty:
-            yield "本周暂无记录，无法生成总结。"
+            yield "本周暂无记录。"
             return
 
         logs = "\n".join([f"- {c}" for c in week_df['content']])
-        prompt = f"你是一个高效的遥感科研助手，请根据以下本周工作日志进行精炼总结：\n\n{logs}"
+        prompt = f"你是一个高效的科研助手，请帮我总结本周工作日志：\n\n{logs}"
 
-        # 启用 stream=True
+        # 开启流式响应
         response = client.chat.completions.create(
-            model="qwen3-235b-a22b", 
+            model="qwen3-235b-a22b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            stream=True 
+            stream=True
         )
+        
         for chunk in response:
-            if chunk.choices[0].delta.content is not None:
-                yield chunk.choices[0].delta.content
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
                 
     except Exception as e:
         yield f"总结生成失败: {e}"
 
-# --- 4. 页面主逻辑 ---
+# --- 4. 页面逻辑 ---
 def main():
-    st.set_page_config(page_title="遥感科研日志", page_icon="🛰️", layout="wide")
+    st.set_page_config(page_title="遥感科研日志", page_icon="🛰️")
 
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
 
     if not st.session_state['logged_in']:
-        # 登录界面
         st.title("🔒 请登录")
         with st.form("login"):
             u = st.text_input("账号", value=USER_ID)
@@ -101,7 +99,6 @@ def main():
                 else:
                     st.error("账号或密码错误")
     else:
-        # 主界面侧边栏
         st.sidebar.write(f"👤 用户: {USER_ID}")
         if st.sidebar.button("退出系统"):
             st.session_state.clear()
@@ -110,7 +107,6 @@ def main():
         st.title("🛰️ 每日工作记录")
         df = get_data()
 
-        # 发布表单
         with st.form("new_post", clear_on_submit=True):
             content = st.text_area("输入今日进展...", height=100)
             if st.form_submit_button("发布记录"):
@@ -123,7 +119,6 @@ def main():
                         "week_number": now.isocalendar()[1]
                     }])
                     save_data(pd.concat([df, new_row], ignore_index=True))
-                    # 数据更新，清除缓存
                     if 'ai_result' in st.session_state:
                         del st.session_state['ai_result']
                     st.rerun()
@@ -152,7 +147,7 @@ def main():
                 
                 df['year'] = df['timestamp'].dt.year
                 groups = df.groupby(['year', 'week_number'])
-                for (yr, wk) in sorted(groups.groups.keys(), reverse=True):
+                for yr, wk in sorted(groups.groups.keys(), reverse=True):
                     is_current = (yr == curr_yr and wk == curr_wk)
                     with st.expander(f"📅 {yr}年 第{wk}周", expanded=is_current):
                         g_data = groups.get_group((yr, wk)).sort_values('timestamp')
@@ -162,22 +157,23 @@ def main():
             with tab3:
                 st.markdown("### 🤖 本周科研回顾")
                 
-                # --- 核心改进：流式响应与缓存控制 ---
-                if st.button("✨ 生成/更新 AI 总结", use_container_width=True):
-                    # 点击按钮时，直接执行流式输出并存入缓存
-                    placeholder = st.empty()
-                    full_response = ""
+                # --- 异步加载与流式显示逻辑 ---
+                if 'ai_result' not in st.session_state:
                     with st.spinner("🚀 Qwen3 正在分析本周进展..."):
-                        # 使用 st.write_stream 实现流式动画
-                        ai_stream = stream_ai_summary(df)
-                        full_response = st.write_stream(ai_stream)
-                    st.session_state['ai_result'] = full_response
-                
-                elif 'ai_result' in st.session_state:
-                    # 如果已有缓存，直接显示
-                    st.info(st.session_state['ai_result'])
+                        # 使用 st.write_stream 实现流式打字机效果
+                        response_container = st.empty()
+                        full_response = ""
+                        for chunk in get_ai_summary_stream(df):
+                            full_response += chunk
+                            response_container.info(full_response)
+                        st.session_state['ai_result'] = full_response
                 else:
-                    st.caption("点击上方按钮，AI 将根据本周日志生成总结。")
+                    st.info(st.session_state['ai_result'])
+                
+                if st.button("✨ 更新 AI 总结", use_container_width=True):
+                    if 'ai_result' in st.session_state:
+                        del st.session_state['ai_result']
+                    st.rerun()
         else:
             st.info("尚无历史记录。")
 
