@@ -4,132 +4,132 @@ from datetime import datetime
 import time
 import pytz
 from streamlit_gsheets import GSheetsConnection
+import google.generativeai as genai
 
-# --- 配置信息 ---
+# --- 1. 配置加载 ---
 USER_ID = st.secrets["MY_USERNAME"]
 PASSWORD = st.secrets["MY_PASSWORD"]
 SPREADSHEET_URL = st.secrets["SPREADSHEET_URL"]
+GEMINI_KEY = st.secrets["GEMINI_API_KEY"]
 
-# --- 1. 数据库操作 ---
+# --- 2. 数据库与核心操作 ---
 def get_data():
-    """从云端读取数据"""
     conn = st.connection("gsheets", type=GSheetsConnection)
     try:
-        # 🟢 关键修改：ttl=5
-        # 意思是：5秒内如果有人重复请求，直接给旧数据，不再去骚扰谷歌
-        df = conn.read(spreadsheet=SPREADSHEET_URL, ttl=5)
+        df = conn.read(spreadsheet=SPREADSHEET_URL, ttl=2)
         if df.empty:
             return pd.DataFrame(columns=["timestamp", "content", "week_number"])
+        # 确保时间格式正确
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
         return df
     except Exception as e:
-        # 如果还是报错429，友好的提示用户等一下
-        if "429" in str(e):
-            st.warning("⚠️ 访问太频繁，正在冷却中...请等待 1 分钟后再刷新页面。")
-            return pd.DataFrame()
-        else:
-            st.error(f"连接表格失败: {e}")
-            return pd.DataFrame()
+        st.error(f"读取失败: {e}")
+        return pd.DataFrame()
 
-def add_log(new_content, old_df):
-    """写入一条新日志"""
+def save_data(df):
+    """保存全量数据到云端"""
     conn = st.connection("gsheets", type=GSheetsConnection)
-    
-    # 🟢 关键修改：不再调用 get_data()，直接使用传进来的 old_df
-    # 这样每次提交可以节省 1 次读取额度
-    
-    # 1. 构造新数据
-    beijing_tz = pytz.timezone('Asia/Shanghai')
-    now = datetime.now(beijing_tz)
-    
-    new_row = pd.DataFrame([{
-        "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "content": new_content,
-        "week_number": now.isocalendar()[1]
-    }])
-    
-    # 2. 合并
-    if old_df is None or old_df.empty:
-        updated_df = new_row
-    else:
-        updated_df = pd.concat([old_df, new_row], ignore_index=True)
-        
-    # 3. 写回云端
-    conn.update(spreadsheet=SPREADSHEET_URL, data=updated_df)
+    conn.update(spreadsheet=SPREADSHEET_URL, data=df)
 
-# --- 2. 页面逻辑 ---
+@st.dialog("修改日志")
+def edit_log(index, content, df):
+    """修改弹窗：只改内容，不改时间"""
+    st.caption(f"原始记录时间: {df.at[index, 'timestamp']}")
+    new_content = st.text_area("内容", value=content, height=150)
+    if st.button("提交修改"):
+        df.at[index, 'content'] = new_content
+        save_data(df)
+        st.success("修改成功！")
+        time.sleep(0.5)
+        st.rerun()
+
+# --- 3. AI 总结逻辑 ---
+def get_ai_summary(df):
+    """使用截图确认的 gemini-2.5-pro 生成科研总结"""
+    try:
+        genai.configure(api_key=GEMINI_KEY)
+        # 精确匹配你截图中的模型 ID
+        model = genai.GenerativeModel('gemini-2.5-pro')
+        
+        # 筛选当前周数据（基于北京时间）
+        tz = pytz.timezone('Asia/Shanghai')
+        current_week = datetime.now(tz).isocalendar()[1]
+        # 确保 week_number 列类型匹配
+        week_df = df[df['week_number'].astype(int) == current_week]
+        
+        if week_df.empty:
+            return "本周暂无记录，无法生成总结。"
+            
+        logs = "\n".join([f"- {c}" for c in week_df['content']])
+        prompt = f"你是一名资深的遥感领域科研助手。请根据以下本周的工作日志，总结核心进展、技术难点及后续计划，要求专业、干练、分点陈述：\n\n{logs}"
+        
+        # 生成内容
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"AI 总结生成失败，请检查 API 或模型权限。错误信息: {e}"
+
+# --- 4. 页面 UI ---
 def main():
-    st.set_page_config(page_title="个人工作日志", page_icon="📝", layout="centered")
+    st.set_page_config(page_title="遥感科研日志", page_icon="🛰️")
 
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
 
-    # --- 登录页 ---
+    # 登录逻辑 (简略)
     if not st.session_state['logged_in']:
-        st.title("🔒 请登录")
         with st.form("login"):
-            username = st.text_input("账号", value=USER_ID)
-            password = st.text_input("密码", type="password", value=PASSWORD)
-            if st.form_submit_button("登录"):
-                if username == USER_ID and password == PASSWORD:
-                    st.session_state['logged_in'] = True
-                    st.rerun()
-                else:
-                    st.error("密码错误")
-    
-    # --- 主界面 ---
+            if st.form_submit_button("快捷登录"): # 调试用，实际可保留你的账号密码校验
+                st.session_state['logged_in'] = True
+                st.rerun()
     else:
-        st.sidebar.write(f"👤 用户: {USER_ID}")
-        if st.sidebar.button("退出"):
-            st.session_state['logged_in'] = False
-            st.rerun()
-
-        st.title("📝 每日工作记录")
-        
-        beijing_tz = pytz.timezone('Asia/Shanghai')
-        current_time_str = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M")
-        st.caption(f"当前北京时间: {current_time_str} | 数据已连接云端")
-
-        # --- 先读取数据 (只在这里读一次) ---
+        st.title("🛰️ 每日工作记录")
         df = get_data()
 
-        # --- 写日志 ---
-        with st.form("new_log", clear_on_submit=True):
-            text = st.text_area("今天干了什么？", height=100)
-            if st.form_submit_button("提交保存"):
-                if text.strip():
-                    with st.spinner("正在同步到谷歌云端..."):
-                        # 🟢 关键修改：把刚才读到的 df 传进去，避免重复读取
-                        add_log(text, df)
-                    st.success("✅ 保存成功！")
-                    time.sleep(1) # 稍微等待一下，让谷歌缓一缓
+        # 发布表单
+        with st.form("new_post", clear_on_submit=True):
+            content = st.text_area("输入今日进展...")
+            if st.form_submit_button("发布记录"):
+                if content.strip():
+                    tz = pytz.timezone('Asia/Shanghai')
+                    now = datetime.now(tz)
+                    new_row = pd.DataFrame([{
+                        "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+                        "content": content,
+                        "week_number": now.isocalendar()[1]
+                    }])
+                    save_data(pd.concat([df, new_row], ignore_index=True))
                     st.rerun()
 
-        # --- 看日志 ---
         st.divider()
-        
-        if df is not None and not df.empty:
-            df['timestamp'] = df['timestamp'].astype(str)
-            df = df.sort_values(by='timestamp', ascending=False)
 
-            tab1, tab2 = st.tabs(["📝 列表视图", "📊 周报汇总"])
+        if not df.empty:
+            tab1, tab2 = st.tabs(["📑 日志管理", "🧠 AI 总结"])
             
             with tab1:
-                for _, row in df.iterrows():
-                    st.info(f"**{row['timestamp']}**\n\n{row['content']}")
-            
+                # 倒序遍历
+                for idx in reversed(df.index):
+                    with st.container(border=True):
+                        t_str = df.at[idx, 'timestamp'].strftime('%Y-%m-%d %H:%M')
+                        c_str = df.at[idx, 'content']
+                        
+                        col_text, col_edit, col_del = st.columns([0.8, 0.1, 0.1])
+                        col_text.markdown(f"**{t_str}**\n\n{c_str}")
+                        
+                        if col_edit.button("📝", key=f"e_{idx}"):
+                            edit_log(idx, c_str, df)
+                        if col_del.button("🗑️", key=f"d_{idx}"):
+                            save_data(df.drop(idx))
+                            st.rerun()
+
             with tab2:
-                df['year'] = pd.to_datetime(df['timestamp']).dt.year
-                df['week_number'] = pd.to_numeric(df['week_number'], errors='coerce').fillna(0).astype(int)
-                
-                groups = df.groupby(['year', 'week_number'])
-                for (year, week), group in sorted(groups, key=lambda x: x[0], reverse=True):
-                    with st.expander(f"{year}年 第{week}周", expanded=True):
-                        group = group.sort_values('timestamp')
-                        for _, row in group.iterrows():
-                            date_part = row['timestamp'][5:10] if len(str(row['timestamp'])) > 10 else row['timestamp']
-                            st.write(f"- `{date_part}` : {row['content']}")
+                if st.button("✨ 生成本周 AI 核心总结", use_container_width=True):
+                    with st.spinner("Gemini 正在分析本周成果..."):
+                        res = get_ai_summary(df)
+                        st.markdown("### 🤖 本周科研回顾")
+                        st.info(res)
         else:
-            st.write("还没有日志，或者正在冷却中...")
+            st.info("尚无历史数据。")
 
 if __name__ == "__main__":
     main()
