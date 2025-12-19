@@ -10,9 +10,9 @@ from openai import OpenAI
 USER_ID = st.secrets["MY_USERNAME"]
 PASSWORD = st.secrets["MY_PASSWORD"]
 SPREADSHEET_URL = st.secrets["SPREADSHEET_URL"]
-QWEN_KEY = "sk-699965b4f8144323807e8f401ca58fe6" # Qwen API Key
+QWEN_KEY = st.secrets["QWEN_API_KEY"]
 
-# --- 2. 数据库与核心操作 ---
+# --- 2. 核心数据操作 ---
 def get_data():
     conn = st.connection("gsheets", type=GSheetsConnection)
     try:
@@ -37,14 +37,17 @@ def edit_dialog(index, content, df):
     if st.button("提交修改"):
         df.at[index, 'content'] = new_content
         save_data(df)
+        # 修改内容后清除旧 AI 总结，确保下次登录或手动更新时数据准确
+        if 'ai_result' in st.session_state:
+            del st.session_state['ai_result']
         st.success("修改成功")
         time.sleep(0.5)
         st.rerun()
 
 # --- 3. Qwen3 AI 总结逻辑 ---
 def get_ai_summary(df):
+    """使用 Qwen3 生成快速总结，不启用长思考模式"""
     try:
-        # 使用 OpenAI 兼容模式调用
         client = OpenAI(
             api_key=QWEN_KEY,
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -54,14 +57,17 @@ def get_ai_summary(df):
         curr_wk = datetime.now(tz).isocalendar()[1]
         week_df = df[df['week_number'] == curr_wk]
         
-        if week_df.empty: return "本周暂无记录，无法总结。"
+        if week_df.empty: return "本周暂无记录。"
 
         logs = "\n".join([f"- {c}" for c in week_df['content']])
-        prompt = f"你是一名遥感科研助手。请分析以下本周日志，精炼总结科研进展（算法、数据、精度指标等）：\n\n{logs}"
+        # 提示词微调：要求直接输出，避免模型进行过多的自我推理
+        prompt = f"你是一个高效的科研助手。请直接、精炼地总结以下周日志的科研进展，禁止啰嗦和深度推理，直接给结果，结果不要太过于罗嗦复杂：\n\n{logs}"
 
         completion = client.chat.completions.create(
-            model="qwen3-235b-a22b", # 使用你截图中的 Qwen3 模型
-            messages=[{"role": "user", "content": prompt}]
+            model="qwen3-235b-a22b", 
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5, # 降低随机性提高生成速度
+            stream=False
         )
         return completion.choices[0].message.content
     except Exception as e:
@@ -74,8 +80,8 @@ def main():
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
 
-    # --- 登录模块 (恢复原始账号密码) ---
     if not st.session_state['logged_in']:
+        # --- 登录界面 ---
         st.title("🔒 请登录")
         with st.form("login"):
             u = st.text_input("账号", value=USER_ID)
@@ -90,11 +96,16 @@ def main():
         # --- 主界面 ---
         st.sidebar.write(f"👤 用户: {USER_ID}")
         if st.sidebar.button("退出系统"):
-            st.session_state['logged_in'] = False
+            st.session_state.clear() # 退出时清理所有状态
             st.rerun()
 
         st.title("🛰️ 每日工作记录")
         df = get_data()
+
+        # 🔵 优化：登录后立即总结 (如果 session_state 里还没有结果)
+        if not df.empty and 'ai_result' not in st.session_state:
+            with st.status("🚀 正在初始化本周 AI 总结...", expanded=False):
+                st.session_state['ai_result'] = get_ai_summary(df)
 
         # 发布表单
         with st.form("new_post", clear_on_submit=True):
@@ -109,16 +120,17 @@ def main():
                         "week_number": now.isocalendar()[1]
                     }])
                     save_data(pd.concat([df, new_row], ignore_index=True))
+                    # 发布新内容后标记 AI 总结需要更新
+                    if 'ai_result' in st.session_state:
+                        del st.session_state['ai_result']
                     st.rerun()
 
         st.divider()
 
         if not df.empty:
-            # 移除 key 参数解决 TypeError，通过状态保持解决跳转问题
             tab1, tab2, tab3 = st.tabs(["📑 日志管理", "📅 周报汇总", "🧠 AI 总结"])
             
             with tab1:
-                # 倒序显示
                 for idx in reversed(df.index):
                     with st.container(border=True):
                         c1, c2, c3 = st.columns([0.8, 0.1, 0.1])
@@ -127,31 +139,34 @@ def main():
                         if c2.button("📝", key=f"e_{idx}"): edit_dialog(idx, df.at[idx, 'content'], df)
                         if c3.button("🗑️", key=f"d_{idx}"):
                             save_data(df.drop(idx))
+                            if 'ai_result' in st.session_state: del st.session_state['ai_result']
                             st.rerun()
 
             with tab2:
-                # 恢复：原有的周列表逻辑
+                # 🔵 优化：默认展开本周
+                tz = pytz.timezone('Asia/Shanghai')
+                now = datetime.now(tz)
+                curr_yr, curr_wk = now.year, now.isocalendar()[1]
+                
                 df['year'] = df['timestamp'].dt.year
                 groups = df.groupby(['year', 'week_number'])
                 for yr, wk in sorted(groups.groups.keys(), reverse=True):
-                    with st.expander(f"📅 {yr}年 第{wk}周"):
+                    # 判断是否为当前周
+                    is_current_week = (yr == curr_yr and wk == curr_wk)
+                    with st.expander(f"📅 {yr}年 第{wk}周", expanded=is_current_week):
                         group_data = groups.get_group((yr, wk)).sort_values('timestamp')
                         for _, r in group_data.iterrows():
                             st.write(f"- `{r['timestamp'].strftime('%m-%d')}`: {r['content']}")
 
             with tab3:
-                # 修复跳转 Bug：将结果存入 session_state
-                if st.button("✨ 生成本周 AI 核心总结", use_container_width=True):
-                    with st.spinner("Qwen3 正在分析中..."):
+                # 🔵 优化：按钮文案改为“更新 AI 总结”
+                if st.button("✨ 更新 AI 总结", use_container_width=True):
+                    with st.spinner("Qwen3 正在重新分析..."):
                         st.session_state['ai_result'] = get_ai_summary(df)
                 
-                # 如果有结果就显示，且不会因为页面刷新丢失
                 if 'ai_result' in st.session_state:
                     st.markdown("### 🤖 本周科研回顾")
                     st.info(st.session_state['ai_result'])
-                    if st.button("清除总结内容"):
-                        del st.session_state['ai_result']
-                        st.rerun()
         else:
             st.info("尚无历史记录。")
 
