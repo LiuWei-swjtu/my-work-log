@@ -45,24 +45,40 @@ def edit_dialog(index, content, df):
 
 # --- 3. AI 总结逻辑 ---
 def get_ai_summary(df):
+    """调用 Gemini 生成总结，增加配额超限处理"""
     try:
         genai.configure(api_key=GEMINI_KEY)
-        model = genai.GenerativeModel('gemini-2.5-pro')
+        
+        # 优先尝试 2.5-pro，如果报错则自动回退到 1.5-pro
+        model_list = ['gemini-2.5-pro', 'gemini-1.5-pro', 'gemini-1.5-flash']
         
         tz = pytz.timezone('Asia/Shanghai')
         current_week = datetime.now(tz).isocalendar()[1]
         week_df = df[df['week_number'] == current_week]
         
         if week_df.empty:
-            return "本周暂无日志记录。"
+            return "本周暂无记录，无法生成总结。"
             
         logs = "\n".join([f"- {c}" for c in week_df['content']])
-        prompt = f"你是一名资深的遥感科研助手。请分析以下本周日志，精炼总结核心进展并提出建议：\n\n{logs}"
+        prompt = f"你是一名资深的遥感科研助手。请分析以下本周日志，总结核心进展并提出建议，要求专业、分点陈述：\n\n{logs}"
         
-        response = model.generate_content(prompt)
-        return response.text
+        # 尝试不同模型直到成功或试完
+        last_error = ""
+        for model_name in model_list:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(prompt)
+                return f"（由 {model_name} 生成）\n\n{response.text}"
+            except Exception as e:
+                last_error = str(e)
+                if "429" in last_error:
+                    continue # 尝试下一个模型
+                break
+                
+        return f"AI 总结生成失败。原因：当前所有模型配额已耗尽或模型不可用。原始错误：{last_error}"
+        
     except Exception as e:
-        return f"AI 总结生成失败: {e}"
+        return f"系统错误: {e}"
 
 # --- 4. 页面 UI ---
 def main():
@@ -155,3 +171,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
