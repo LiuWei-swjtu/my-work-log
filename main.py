@@ -75,40 +75,53 @@ def get_ai_summary_stream(df):
 def main():
     st.set_page_config(page_title="科研日记", page_icon="🌍")
 
-    # --- 强力 CSS：隐藏右下角图标 + 锁定手机端横向排列 ---
+    # --- 核心 CSS 修复逻辑 ---
     st.markdown("""
         <style>
-        /* 1. 彻底隐藏官方元素：Manage App, 底部 Logo, 顶部工具栏 */
+        /* A. 强力隐藏官方 UI：Manage App 按钮、底部标志、状态窗 */
         header, footer {visibility: hidden !important; height: 0px !important;}
         .stDeployButton, .stAppDeployButton {display:none !important;}
         [data-testid="stStatusWidget"], [data-testid="stToolbar"] {display: none !important;}
         iframe[title="manage-app"], .stStatusWidget {display: none !important;}
         div[data-testid="stDecoration"] {display: none !important;}
-
-        /* 2. 强制 st.columns 在手机端保持横向排列，不准堆叠 */
-        [data-testid="stHorizontalBlock"] {
-            flex-direction: row !important;
-            flex-wrap: nowrap !important;
-            align-items: center !important;
-        }
         
-        /* 3. 按钮样式优化：固定小方块尺寸，防止手机端撑满全屏 */
+        /* B. 核心排版：锁定移动端 st.columns 不准换行/堆叠 */
+        @media (max-width: 640px) {
+            [data-testid="stHorizontalBlock"] {
+                display: flex !important;
+                flex-direction: row !important; /* 强制横向 */
+                flex-wrap: nowrap !important; /* 禁止换行 */
+                align-items: center !important;
+            }
+            [data-testid="column"] {
+                width: auto !important; /* 宽度由内容决定 */
+                flex: 0 1 auto !important;
+                min-width: 0px !important;
+            }
+            /* 时间戳列占据剩余所有空间 */
+            [data-testid="stHorizontalBlock"] > div:first-child {
+                flex: 1 1 0% !important;
+            }
+        }
+
+        /* C. 按钮精致化：固定为紧凑的小方块 */
         .stButton > button {
-            width: 35px !important;
-            height: 35px !important;
-            min-width: 35px !important;
-            padding: 0 !important;
-            font-size: 16px !important;
+            width: 32px !important;
+            height: 32px !important;
+            min-width: 32px !important;
+            padding: 0px !important;
+            font-size: 14px !important;
             display: flex !important;
             align-items: center !important;
             justify-content: center !important;
-            border-radius: 5px !important;
+            border-radius: 6px !important;
+            margin: 0px !important;
             line-height: 1 !important;
         }
         
-        /* 4. 调整日志条目内部间距 */
-        [data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock"] > div {
-            padding-bottom: 0px !important;
+        /* D. 内容间距微调，防止按钮被挤压 */
+        [data-testid="column"] [data-testid="stVerticalBlock"] {
+            gap: 0px !important;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -160,15 +173,16 @@ def main():
             with tab1:
                 for idx in reversed(df.index):
                     with st.container(border=True):
-                        # --- 核心排版：锁定 [时间戳(占据剩余空间) | 按钮(固定宽) | 按钮(固定宽)] ---
-                        row_cols = st.columns([1, 0.15, 0.15])
+                        # --- 修改此处：更合理的列比例分配 ---
+                        # 0.7 留给时间，后面两列固定给按钮
+                        cols = st.columns([0.7, 0.15, 0.15])
                         
-                        row_cols[0].markdown(f"**{df.at[idx, 'timestamp'].strftime('%Y-%m-%d %H:%M')}**")
+                        cols[0].markdown(f"**{df.at[idx, 'timestamp'].strftime('%Y-%m-%d %H:%M')}**")
                         
-                        if row_cols[1].button("✏️", key=f"e_{idx}"): 
+                        if cols[1].button("✏️", key=f"e_{idx}"): 
                             edit_dialog(idx, df.at[idx, 'content'], df)
                             
-                        if row_cols[2].button("❌", key=f"d_{idx}"):
+                        if cols[2].button("❌", key=f"d_{idx}"):
                             save_data(df.drop(idx))
                             if 'ai_result' in st.session_state: del st.session_state['ai_result']
                             st.rerun()
@@ -391,6 +405,7 @@ if __name__ == "__main__":
 
 # if __name__ == "__main__":
 #     main()
+
 
 
 
