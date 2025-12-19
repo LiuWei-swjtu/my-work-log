@@ -28,7 +28,11 @@ def get_data():
 
 def save_data(df):
     conn = st.connection("gsheets", type=GSheetsConnection)
-    conn.update(spreadsheet=SPREADSHEET_URL, data=df)
+    df_to_save = df.copy()
+    # 【核心修复】保存前强制将时间戳转为完整的字符串格式，防止丢失时分秒
+    if 'timestamp' in df_to_save.columns:
+        df_to_save['timestamp'] = pd.to_datetime(df_to_save['timestamp']).dt.strftime("%Y-%m-%d %H:%M:%S")
+    conn.update(spreadsheet=SPREADSHEET_URL, data=df_to_save)
 
 @st.dialog("📝 修改记录")
 def edit_dialog(index, content, df):
@@ -179,6 +183,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
