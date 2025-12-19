@@ -75,26 +75,45 @@ def get_ai_summary_stream(df):
 def main():
     st.set_page_config(page_title="科研日记", page_icon="🌍")
 
-    # --- CSS 注入：隐藏右下角 Manage app/图标 & 优化排版 ---
+    # --- 核心 CSS 修改：隐藏右下角图标 + 修复移动端列堆叠 ---
     st.markdown("""
         <style>
-        /* 1. 彻底隐藏官方页眉、页脚及右下角管理工具 */
+        /* 1. 隐藏所有官方按钮、角标、页眉页脚 */
         header {visibility: hidden;}
         footer {visibility: hidden;}
         .stAppDeployButton {display:none;}
-        [data-testid="stStatusWidget"] {display:none;}
+        [data-testid="stStatusWidget"] {display:none !important;}
         .stAppToolbar {display: none !important;}
         iframe[title="manage-app"] {display: none !important;}
-        
-        /* 2. 针对手机端按钮排版优化 */
-        div[data-testid="stColumn"] {
-            display: flex;
-            align-items: center;
-            justify-content: flex-end;
+        #MainMenu {visibility: hidden;}
+
+        /* 2. 修复移动端 st.columns 堆叠问题，强制横向排列 */
+        [data-testid="stHorizontalBlock"] {
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            align-items: center !important;
         }
-        /* 缩小按钮间距 */
+        [data-testid="column"] {
+            width: fit-content !important;
+            flex: unset !important;
+            min-width: 0px !important;
+        }
+        /* 时间日期列占满剩余空间 */
+        [data-testid="stHorizontalBlock"] > div:first-child {
+            flex: 1 1 auto !important;
+            width: 100% !important;
+        }
+
+        /* 3. 按钮样式优化：防止手机端按钮变大 */
         .stButton button {
-            padding: 2px 10px !important;
+            width: 38px !important;
+            height: 38px !important;
+            padding: 0px !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            border-radius: 8px !important;
+            margin-top: 0px !important;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -146,20 +165,17 @@ def main():
             with tab1:
                 for idx in reversed(df.index):
                     with st.container(border=True):
-                        # 重新设计的响应式排版：顶部一行是时间和功能键
-                        # 增加时间列宽度，让按钮紧凑排列在右侧
-                        c1, c2, c3 = st.columns([0.6, 0.2, 0.2])
+                        # 排版优化：时间与按钮保持在同一行
+                        c1, c2, c3 = st.columns([1, 0.1, 0.1])
                         c1.markdown(f"**{df.at[idx, 'timestamp'].strftime('%Y-%m-%d %H:%M')}**")
                         
-                        # 按钮开启 use_container_width 以适配触屏
-                        if c2.button("✏️", key=f"e_{idx}", use_container_width=True): 
+                        if c2.button("✏️", key=f"e_{idx}"): 
                             edit_dialog(idx, df.at[idx, 'content'], df)
-                        if c3.button("❌", key=f"d_{idx}", use_container_width=True):
+                        if c3.button("❌", key=f"d_{idx}"):
                             save_data(df.drop(idx))
                             if 'ai_result' in st.session_state: del st.session_state['ai_result']
                             st.rerun()
                         
-                        # 内容单独显示在下方，避免挤压按钮
                         st.write(df.at[idx, 'content'])
 
             with tab2:
