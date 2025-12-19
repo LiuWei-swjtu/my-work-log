@@ -37,7 +37,7 @@ def edit_dialog(index, content, df):
     if st.button("提交修改"):
         df.at[index, 'content'] = new_content
         save_data(df)
-        # 修改内容后清除旧 AI 总结，确保下次登录或手动更新时数据准确
+        # 内容变动后清空 AI 缓存
         if 'ai_result' in st.session_state:
             del st.session_state['ai_result']
         st.success("修改成功")
@@ -46,13 +46,12 @@ def edit_dialog(index, content, df):
 
 # --- 3. Qwen3 AI 总结逻辑 ---
 def get_ai_summary(df):
-    """使用 Qwen3 生成快速总结，不启用长思考模式"""
+    """快速总结，禁用深度推理"""
     try:
         client = OpenAI(
             api_key=QWEN_KEY,
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         )
-        
         tz = pytz.timezone('Asia/Shanghai')
         curr_wk = datetime.now(tz).isocalendar()[1]
         week_df = df[df['week_number'] == curr_wk]
@@ -60,14 +59,13 @@ def get_ai_summary(df):
         if week_df.empty: return "本周暂无记录。"
 
         logs = "\n".join([f"- {c}" for c in week_df['content']])
-        # 提示词微调：要求直接输出，避免模型进行过多的自我推理
-        prompt = f"你是一个高效的科研助手。请直接、精炼地总结以下周日志的科研进展，禁止啰嗦和深度推理，直接给结果，结果不要太过于罗嗦复杂：\n\n{logs}"
+        # 强制简洁
+        prompt = f"你是一个高效的科研助手。请直接、精炼地总结以下科研进展，禁止深度推理，直接分点给出结果：\n\n{logs}"
 
         completion = client.chat.completions.create(
             model="qwen3-235b-a22b", 
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.5, # 降低随机性提高生成速度
-            stream=False
+            temperature=0.3, # 降低随机性进一步提速
         )
         return completion.choices[0].message.content
     except Exception as e:
@@ -96,20 +94,15 @@ def main():
         # --- 主界面 ---
         st.sidebar.write(f"👤 用户: {USER_ID}")
         if st.sidebar.button("退出系统"):
-            st.session_state.clear() # 退出时清理所有状态
+            st.session_state.clear()
             st.rerun()
 
         st.title("🛰️ 每日工作记录")
         df = get_data()
 
-        # 🔵 优化：登录后立即总结 (如果 session_state 里还没有结果)
-        if not df.empty and 'ai_result' not in st.session_state:
-            with st.status("🚀 正在初始化本周 AI 总结...", expanded=False):
-                st.session_state['ai_result'] = get_ai_summary(df)
-
-        # 发布表单
+        # 发布表单 (立即显示)
         with st.form("new_post", clear_on_submit=True):
-            content = st.text_area("今天有什么新进展？", height=100)
+            content = st.text_area("输入今日进展...", height=100)
             if st.form_submit_button("发布记录"):
                 if content.strip():
                     tz = pytz.timezone('Asia/Shanghai')
@@ -120,7 +113,6 @@ def main():
                         "week_number": now.isocalendar()[1]
                     }])
                     save_data(pd.concat([df, new_row], ignore_index=True))
-                    # 发布新内容后标记 AI 总结需要更新
                     if 'ai_result' in st.session_state:
                         del st.session_state['ai_result']
                     st.rerun()
@@ -128,6 +120,7 @@ def main():
         st.divider()
 
         if not df.empty:
+            # 使用标签页，不设置固定 key 以兼容旧版本，但逻辑上保证状态
             tab1, tab2, tab3 = st.tabs(["📑 日志管理", "📅 周报汇总", "🧠 AI 总结"])
             
             with tab1:
@@ -143,7 +136,7 @@ def main():
                             st.rerun()
 
             with tab2:
-                # 🔵 优化：默认展开本周
+                # 默认展开本周
                 tz = pytz.timezone('Asia/Shanghai')
                 now = datetime.now(tz)
                 curr_yr, curr_wk = now.year, now.isocalendar()[1]
@@ -151,17 +144,20 @@ def main():
                 df['year'] = df['timestamp'].dt.year
                 groups = df.groupby(['year', 'week_number'])
                 for yr, wk in sorted(groups.groups.keys(), reverse=True):
-                    # 判断是否为当前周
-                    is_current_week = (yr == curr_yr and wk == curr_wk)
-                    with st.expander(f"📅 {yr}年 第{wk}周", expanded=is_current_week):
-                        group_data = groups.get_group((yr, wk)).sort_values('timestamp')
-                        for _, r in group_data.iterrows():
+                    is_current = (yr == curr_yr and wk == curr_wk)
+                    with st.expander(f"📅 {yr}年 第{wk}周", expanded=is_current):
+                        g_data = groups.get_group((yr, wk)).sort_values('timestamp')
+                        for _, r in g_data.iterrows():
                             st.write(f"- `{r['timestamp'].strftime('%m-%d')}`: {r['content']}")
 
             with tab3:
-                # 🔵 优化：按钮文案改为“更新 AI 总结”
+                # 🔵 核心逻辑修改：仅在此标签页内进行初始化可视化
+                if 'ai_result' not in st.session_state:
+                    with st.spinner("🚀 Qwen3 正在分析本周进展..."):
+                        st.session_state['ai_result'] = get_ai_summary(df)
+                
                 if st.button("✨ 更新 AI 总结", use_container_width=True):
-                    with st.spinner("Qwen3 正在重新分析..."):
+                    with st.spinner("正在重新获取最新总结..."):
                         st.session_state['ai_result'] = get_ai_summary(df)
                 
                 if 'ai_result' in st.session_state:
