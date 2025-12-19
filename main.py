@@ -29,7 +29,6 @@ def get_data():
 def save_data(df):
     conn = st.connection("gsheets", type=GSheetsConnection)
     df_to_save = df.copy()
-    # 【核心修复】保存前强制将时间戳转为完整的字符串格式，防止丢失时分秒
     if 'timestamp' in df_to_save.columns:
         df_to_save['timestamp'] = pd.to_datetime(df_to_save['timestamp']).dt.strftime("%Y-%m-%d %H:%M:%S")
     conn.update(spreadsheet=SPREADSHEET_URL, data=df_to_save)
@@ -49,7 +48,6 @@ def edit_dialog(index, content, df):
 
 # --- 3. Qwen3 AI 流式总结逻辑 ---
 def get_ai_summary_stream(df):
-    """流式获取总结，仅处理本周数据"""
     try:
         client = OpenAI(
             api_key=QWEN_KEY,
@@ -57,30 +55,22 @@ def get_ai_summary_stream(df):
         )
         tz = pytz.timezone('Asia/Shanghai')
         curr_wk = datetime.now(tz).isocalendar()[1]
-        
-        # 【分页处理】仅筛选本周内容发送给 AI
         week_df = df[df['week_number'] == curr_wk]
-        
         if week_df.empty:
             yield "本周暂无记录。"
             return
-
         logs = "\n".join([f"- {c}" for c in week_df['content']])
         prompt = f"你是一个高效的科研助手，请帮我总结本周工作日志：\n\n{logs}"
-
-        # 开启流式响应
         response = client.chat.completions.create(
             model="qwen3-235b-a22b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             stream=True
         )
-        
         for chunk in response:
             content = chunk.choices[0].delta.content
             if content:
                 yield content
-                
     except Exception as e:
         yield f"总结生成失败: {e}"
 
@@ -88,24 +78,68 @@ def get_ai_summary_stream(df):
 def main():
     st.set_page_config(page_title="科研日记", page_icon="🌍")
 
+    # CSS 保持不变
+    st.markdown("""
+        <style>
+        header, footer {visibility: hidden !important; height: 0px !important;}
+        .stDeployButton, .stAppDeployButton {display:none !important;}
+        [data-testid="stStatusWidget"], [data-testid="stToolbar"] {display: none !important;}
+        iframe[title="manage-app"], .stStatusWidget {display: none !important;}
+        div[data-testid="stDecoration"] {display: none !important;}
+        
+        @media (max-width: 640px) {
+            [data-testid="stHorizontalBlock"] {
+                display: flex !important;
+                flex-direction: row !important;
+                flex-wrap: nowrap !important;
+                align-items: center !important;
+            }
+            [data-testid="column"] {
+                width: auto !important;
+                flex: 0 1 auto !important;
+                min-width: 0px !important;
+            }
+            [data-testid="stHorizontalBlock"] > div:first-child {
+                flex: 1 1 0% !important;
+            }
+        }
+
+        .stButton > button {
+            width: 32px !important;
+            height: 32px !important;
+            min-width: 32px !important;
+            padding: 0px !important;
+            font-size: 14px !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            border-radius: 6px !important;
+            margin: 0px !important;
+            line-height: 1 !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
 
+    # --- 核心修复点：使用全页面占位符 ---
+    main_placeholder = st.empty()
+
     if not st.session_state['logged_in']:
-        st.title("🔒 请登录")
-        with st.form("login"):
-            u = st.text_input("账号", value=USER_ID)
-            p = st.text_input("密码", type="password", value=PASSWORD)
-            if st.form_submit_button("登录"):
-                if u == USER_ID and p == PASSWORD:
-                    st.session_state['logged_in'] = True
-                    st.rerun()
-                else:
-                    st.error("账号或密码错误")
+        with main_placeholder.container():
+            st.title("🔒 请登录")
+            with st.form("login"):
+                u = st.text_input("账号", value=USER_ID)
+                p = st.text_input("密码", type="password", value=PASSWORD)
+                if st.form_submit_button("登录"):
+                    if u == USER_ID and p == PASSWORD:
+                        st.session_state['logged_in'] = True
+                        st.rerun()
+                    else:
+                        st.error("账号或密码错误")
     else:
-        # --- 解决叠加问题：将所有内容放入容器中渲染 ---
-        main_container = st.container()
-        with main_container:
+        with main_placeholder.container():
             st.sidebar.write(f"🎓 用户: {USER_ID}")
             if st.sidebar.button("退出系统"):
                 st.session_state.clear()
@@ -138,20 +172,20 @@ def main():
                 with tab1:
                     for idx in reversed(df.index):
                         with st.container(border=True):
-                            c1, c2, c3 = st.columns([0.8, 0.1, 0.1])
-                            c1.markdown(f"**{df.at[idx, 'timestamp'].strftime('%Y-%m-%d %H:%M')}**")
-                            c1.write(df.at[idx, 'content'])
-                            if c2.button("✏️", key=f"e_{idx}"): edit_dialog(idx, df.at[idx, 'content'], df)
-                            if c3.button("❌", key=f"d_{idx}"):
+                            cols = st.columns([0.7, 0.15, 0.15])
+                            cols[0].markdown(f"**{df.at[idx, 'timestamp'].strftime('%Y-%m-%d %H:%M')}**")
+                            if cols[1].button("✏️", key=f"e_{idx}"): 
+                                edit_dialog(idx, df.at[idx, 'content'], df)
+                            if cols[2].button("❌", key=f"d_{idx}"):
                                 save_data(df.drop(idx))
                                 if 'ai_result' in st.session_state: del st.session_state['ai_result']
                                 st.rerun()
+                            st.write(df.at[idx, 'content'])
 
                 with tab2:
                     tz = pytz.timezone('Asia/Shanghai')
                     now = datetime.now(tz)
                     curr_yr, curr_wk = now.year, now.isocalendar()[1]
-                    
                     df['year'] = df['timestamp'].dt.year
                     groups = df.groupby(['year', 'week_number'])
                     for yr, wk in sorted(groups.groups.keys(), reverse=True):
@@ -163,8 +197,6 @@ def main():
 
                 with tab3:
                     st.markdown("### ✨ 本周科研回顾")
-                    
-                    # --- 异步加载与流式显示逻辑 ---
                     if 'ai_result' not in st.session_state:
                         with st.spinner("🚀 Qwen3 正在分析本周进展..."):
                             response_container = st.empty()
@@ -175,7 +207,6 @@ def main():
                             st.session_state['ai_result'] = full_response
                     else:
                         st.info(st.session_state['ai_result'])
-                    
                     if st.button("✨ 更新 AI 总结", use_container_width=True):
                         if 'ai_result' in st.session_state:
                             del st.session_state['ai_result']
@@ -370,6 +401,7 @@ if __name__ == "__main__":
 
 # if __name__ == "__main__":
 #     main()
+
 
 
 
