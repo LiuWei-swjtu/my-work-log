@@ -10,7 +10,7 @@ from openai import OpenAI
 USER_ID = st.secrets["MY_USERNAME"]
 PASSWORD = st.secrets["MY_PASSWORD"]
 SPREADSHEET_URL = st.secrets["SPREADSHEET_URL"]
-QWEN_KEY = st.secrets["QWEN_API_KEY"]
+DEEPSEEK_KEY = st.secrets["DEEPSEEK_API_KEY"]
 
 # --- 2. 核心数据操作 ---
 def get_data():
@@ -47,13 +47,13 @@ def edit_dialog(index, content, df):
         time.sleep(0.0001)
         st.rerun()
 
-# --- 3. Qwen3 AI 流式总结逻辑 ---
+# --- 3. DeepSeek AI 流式总结逻辑 ---
 def get_ai_summary_stream(df):
     """流式获取总结，仅处理本周数据"""
     try:
         client = OpenAI(
-            api_key=QWEN_KEY,
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key=DEEPSEEK_KEY,
+            base_url="https://api.deepseek.com",
         )
         tz = pytz.timezone('Asia/Shanghai')
         curr_wk = datetime.now(tz).isocalendar()[1]
@@ -70,7 +70,8 @@ def get_ai_summary_stream(df):
 
         # 开启流式响应
         response = client.chat.completions.create(
-            model="qwen3-235b-a22b",
+            model="deepseek-chat",
+            # model="deepseek-reasoner",     # 思考模式（更强但更慢/更贵，按需切）
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             stream=True
@@ -163,7 +164,7 @@ def main():
                 
                 # --- 异步加载与流式显示逻辑 ---
                 if 'ai_result' not in st.session_state:
-                    with st.spinner("🚀 Qwen3 正在分析本周进展..."):
+                    with st.spinner("🚀 DeepSeek 正在分析本周进展..."):
                         # 使用 st.write_stream 实现流式打字机效果
                         response_container = st.empty()
                         full_response = ""
@@ -183,6 +184,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
